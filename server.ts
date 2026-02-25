@@ -50,16 +50,34 @@ app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
   
   try {
-    const sheets = google.sheets({ version: "v4", auth: getAuthClient() });
     const spreadsheetId = (process.env.SPREADSHEET_ID || "1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM").trim();
+    if (!spreadsheetId) {
+      return res.status(500).json({ error: "SPREADSHEET_ID belum diatur di environment variables." });
+    }
 
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "Users!A:D",
-    });
+    const sheets = google.sheets({ version: "v4", auth: getAuthClient() });
+
+    let response;
+    try {
+      response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: "Users!A:D",
+      });
+    } catch (err: any) {
+      console.error("Sheets access error:", err.message);
+      if (err.message?.includes("not found") || err.message?.includes("range") || err.code === 404) {
+        return res.status(400).json({ 
+          error: "Tabel 'Users' tidak ditemukan di Google Sheets. Pastikan Anda sudah melakukan 'Inisialisasi Sheet' (Gunakan akun demo jika ini pertama kali)." 
+        });
+      }
+      throw err;
+    }
 
     const rows = response.data.values || [];
-    const userRow = rows.find(row => row[0] === email && row[1] === password);
+    // Skip header row if it exists and matches "Email"
+    const dataRows = rows.length > 0 && rows[0][0] === "Email" ? rows.slice(1) : rows;
+    
+    const userRow = dataRows.find(row => row[0] === email && row[1] === password);
 
     if (userRow) {
       const user = {
@@ -80,10 +98,14 @@ app.post("/api/auth/login", async (req, res) => {
     }
   } catch (error: any) {
     console.error("Login error:", error);
-    let errorMessage = "Gagal melakukan login";
+    let errorMessage = error.message || "Gagal melakukan login";
+    
     if (error.message?.includes("No key or keyFile set") || error.message?.includes("is not set in environment variables")) {
-      errorMessage = "Konfigurasi Google Service Account belum lengkap di panel Secrets.";
+      errorMessage = "Konfigurasi Google Service Account (Email/Private Key) belum lengkap di panel Secrets.";
+    } else if (error.message?.includes("PEM_read_bio_PrivateKey")) {
+      errorMessage = "Format GOOGLE_PRIVATE_KEY salah. Pastikan menyertakan header/footer dan karakter newline (\\n) dengan benar.";
     }
+    
     res.status(500).json({ error: errorMessage });
   }
 });

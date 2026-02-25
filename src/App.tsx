@@ -157,7 +157,16 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const result = await res.json();
+      
+      let result;
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        result = await res.json();
+      } else {
+        const text = await res.text();
+        throw new Error(`Server error (${res.status}): ${text.slice(0, 100)}`);
+      }
+
       if (res.ok) {
         setIsAuthenticated(true);
         setUser(result.user);
@@ -166,9 +175,9 @@ export default function App() {
       } else {
         alert(result.error || "Login gagal");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert("Terjadi kesalahan sistem");
+      alert(err.message || "Terjadi kesalahan sistem");
     } finally {
       setLoading(false);
     }
