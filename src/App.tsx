@@ -79,7 +79,8 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [userRole, setUserRole] = useState<string>("Admin"); // Default for demo
+  const [user, setUser] = useState<any>(null);
+  const [userRole, setUserRole] = useState<string>("Anggota");
   const [showAddModal, setShowAddModal] = useState<string | null>(null);
   const [editingItem, setEditingItem] = useState<any>(null);
   const [data, setData] = useState<any>({
@@ -101,9 +102,11 @@ export default function App() {
         setIsAuthenticated(false);
         return;
       }
-      const { isAuthenticated } = await res.json();
+      const { isAuthenticated, user } = await res.json();
       setIsAuthenticated(isAuthenticated);
       if (isAuthenticated) {
+        setUser(user);
+        setUserRole(user.role);
         fetchAllData();
       }
     } catch (err) {
@@ -141,28 +144,41 @@ export default function App() {
     }
   };
 
-  const handleConnect = async () => {
+  const handleLogin = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setLoading(true);
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get("email");
+    const password = formData.get("password");
+
     try {
-      const res = await fetch("/api/auth/url");
-      const { url } = await res.json();
-      const authWindow = window.open(url, "google_auth", "width=600,height=700");
-      
-      const handleMessage = (event: MessageEvent) => {
-        if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
-          setIsAuthenticated(true);
-          fetchAllData();
-          window.removeEventListener('message', handleMessage);
-        }
-      };
-      window.addEventListener('message', handleMessage);
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const result = await res.json();
+      if (res.ok) {
+        setIsAuthenticated(true);
+        setUser(result.user);
+        setUserRole(result.user.role);
+        fetchAllData();
+      } else {
+        alert(result.error || "Login gagal");
+      }
     } catch (err) {
       console.error(err);
+      alert("Terjadi kesalahan sistem");
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     setIsAuthenticated(false);
+    setUser(null);
+    setUserRole("Anggota");
   };
 
   const initSheets = async () => {
@@ -312,29 +328,54 @@ export default function App() {
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl border border-slate-100 text-center"
+          className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl border border-slate-100"
         >
           <div className="w-20 h-20 bg-emerald-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
             <ShieldCheck size={40} className="text-emerald-600" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 mb-2">Koperasi Digital</h1>
-          <p className="text-slate-500 mb-8">Hubungkan akun Google Anda untuk mengelola data koperasi melalui Google Sheets.</p>
+          <h1 className="text-2xl font-bold text-slate-900 mb-2 text-center">Koperasi Digital</h1>
+          <p className="text-slate-500 mb-8 text-center">Silakan login untuk mengelola data koperasi.</p>
           
-          <button
-            onClick={handleConnect}
-            className="w-full bg-slate-900 text-white py-4 rounded-xl font-semibold hover:bg-slate-800 transition-all flex items-center justify-center gap-3"
-          >
-            <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
-            Hubungkan Google Sheets
-          </button>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Email</label>
+              <input 
+                name="email" 
+                type="email" 
+                required 
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500" 
+                placeholder="admin@koperasi.com"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Password</label>
+              <input 
+                name="password" 
+                type="password" 
+                required 
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500" 
+                placeholder="••••••••"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-slate-900 text-white py-4 rounded-xl font-semibold hover:bg-slate-800 transition-all flex items-center justify-center gap-3 disabled:opacity-50"
+            >
+              {loading ? "Memproses..." : "Masuk ke Aplikasi"}
+            </button>
+          </form>
           
           <div className="mt-8 pt-8 border-t border-slate-100 text-left">
-            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4">Langkah Persiapan:</h3>
-            <ol className="text-sm text-slate-600 space-y-3 list-decimal pl-4">
-              <li>Pastikan Anda sudah mengatur <b>GOOGLE_CLIENT_ID</b> dan <b>GOOGLE_CLIENT_SECRET</b> di panel Secrets.</li>
-              <li>Gunakan Spreadsheet ID: <code className="bg-slate-100 px-1 rounded">1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM</code></li>
-              <li>Tambahkan Redirect URI: <code className="bg-slate-100 px-1 rounded block mt-1 break-all">{window.location.origin}/auth/callback</code></li>
-            </ol>
+            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4">Akun Demo:</h3>
+            <div className="text-xs text-slate-600 space-y-2">
+              <p><b>Admin:</b> admin@koperasi.com / admin123</p>
+              <p><b>Staff:</b> staff@koperasi.com / staff123</p>
+              <p><b>Anggota:</b> budi@email.com / budi123</p>
+            </div>
+            <p className="mt-4 text-[10px] text-slate-400 italic">
+              *Pastikan Anda sudah menjalankan <b>Inisialisasi Sheet</b> & <b>Isi Data Sampel</b> melalui dashboard Admin setelah login pertama kali.
+            </p>
           </div>
         </motion.div>
       </div>
@@ -430,16 +471,11 @@ export default function App() {
 
         <div className="mt-auto pt-6 border-t border-slate-100">
           <div className="mb-4 px-4">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase mb-2 tracking-wider">Level Akses (Demo)</label>
-            <select 
-              value={userRole}
-              onChange={(e) => setUserRole(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            >
-              <option value="Admin">Administrator</option>
-              <option value="Pengurus">Pengurus (Staff)</option>
-              <option value="Anggota">Anggota</option>
-            </select>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+              <p className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-wider">User Aktif</p>
+              <p className="text-sm font-bold text-slate-900 truncate">{user?.name || "User"}</p>
+              <p className="text-[10px] font-medium text-emerald-600 uppercase tracking-tighter">{userRole}</p>
+            </div>
           </div>
           <button 
             onClick={handleLogout}

@@ -18,70 +18,87 @@ app.use(express.json());
 app.use(cookieParser());
 
 const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
-const REDIRECT_URI = `${process.env.APP_URL || "http://localhost:3000"}/auth/callback`;
 
-function getOAuthClient() {
-  return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    REDIRECT_URI
-  );
+function getAuthClient() {
+  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+  let key = process.env.GOOGLE_PRIVATE_KEY;
+
+  if (!email || !key) {
+    throw new Error("GOOGLE_SERVICE_ACCOUNT_EMAIL or GOOGLE_PRIVATE_KEY is not set in environment variables.");
+  }
+
+  // Handle escaped newlines if present
+  if (key.includes('\\n')) {
+    key = key.replace(/\\n/g, '\n');
+  }
+
+  // Ensure the key has the correct headers if they were stripped or malformed
+  if (!key.startsWith('-----BEGIN PRIVATE KEY-----')) {
+    console.warn("GOOGLE_PRIVATE_KEY does not start with expected header.");
+  }
+
+  return new google.auth.JWT({
+    email: email,
+    key: key,
+    scopes: SCOPES,
+  });
 }
 
-// --- Auth Routes ---
+// --- Auth Routes (Session Based) ---
 
-app.get("/api/auth/url", (req, res) => {
-  const oauth2Client = getOAuthClient();
-  const url = oauth2Client.generateAuthUrl({
-    access_type: "offline",
-    scope: SCOPES,
-    prompt: "consent",
-  });
-  res.json({ url });
-});
-
-app.get("/auth/callback", async (req, res) => {
-  const { code } = req.query;
-  const oauth2Client = getOAuthClient();
-
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+  
   try {
-    const { tokens } = await oauth2Client.getToken(code as string);
-    // In a real app, store this in a database. For now, we'll use a cookie.
-    // NOTE: sameSite: 'none' and secure: true are required for iframes.
-    res.cookie("google_tokens", JSON.stringify(tokens), {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
+    const sheets = google.sheets({ version: "v4", auth: getAuthClient() });
+    const spreadsheetId = (process.env.SPREADSHEET_ID || "1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM").trim();
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Users!A:D",
     });
 
-    res.send(`
-      <html>
-        <body>
-          <script>
-            if (window.opener) {
-              window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS' }, '*');
-              window.close();
-            } else {
-              window.location.href = '/';
-            }
-          </script>
-          <p>Authentication successful. This window should close automatically.</p>
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    console.error("Error retrieving access token", error);
-    res.status(500).send("Authentication failed");
+    const rows = response.data.values || [];
+    const userRow = rows.find(row => row[0] === email && row[1] === password);
+
+    if (userRow) {
+      const user = {
+        email: userRow[0],
+        role: userRow[2],
+        name: userRow[3]
+      };
+      
+      res.cookie("user_session", JSON.stringify(user), {
+        httpOnly: true,
+        secure: true,
+        sameSite: "none",
+      });
+      
+      res.json({ success: true, user });
+    } else {
+      res.status(401).json({ error: "Email atau Password salah" });
+    }
+  } catch (error: any) {
+    console.error("Login error:", error);
+    let errorMessage = "Gagal melakukan login";
+    if (error.message?.includes("No key or keyFile set") || error.message?.includes("is not set in environment variables")) {
+      errorMessage = "Konfigurasi Google Service Account belum lengkap di panel Secrets.";
+    }
+    res.status(500).json({ error: errorMessage });
   }
 });
 
 app.get("/api/auth/status", (req, res) => {
-  const tokens = req.cookies.google_tokens;
-  res.json({ isAuthenticated: !!tokens });
+  const session = req.cookies.user_session;
+  if (session) {
+    res.json({ isAuthenticated: true, user: JSON.parse(session) });
+  } else {
+    res.json({ isAuthenticated: false });
+  }
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  res.clearCookie("google_tokens", {
+  res.clearCookie("user_session", {
     secure: true,
     sameSite: "none",
   });
@@ -90,20 +107,14 @@ app.post("/api/auth/logout", (req, res) => {
 
 // --- Spreadsheet Routes ---
 
-async function getSheets(req: express.Request) {
-  const tokensStr = req.cookies.google_tokens;
-  if (!tokensStr) throw new Error("Not authenticated");
-  
-  const tokens = JSON.parse(tokensStr);
-  const oauth2Client = getOAuthClient();
-  oauth2Client.setCredentials(tokens);
-  
-  return google.sheets({ version: "v4", auth: oauth2Client });
+async function getSheets() {
+  const auth = getAuthClient();
+  return google.sheets({ version: "v4", auth });
 }
 
 app.get("/api/sheets/init", async (req, res) => {
   try {
-    const sheets = await getSheets(req);
+    const sheets = await getSheets();
     const spreadsheetId = (process.env.SPREADSHEET_ID || "1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM").trim();
 
     // Check if sheets exist, if not create them
@@ -131,7 +142,7 @@ app.get("/api/sheets/init", async (req, res) => {
         if (title === "Products") headers = ["ID", "Name", "Price", "Category", "Stock"];
         if (title === "Transactions") headers = ["ID", "MemberID", "Type", "Amount", "Date", "Description"];
         if (title === "Inventory") headers = ["ProductID", "Quantity", "LastUpdated"];
-        if (title === "Users") headers = ["Email", "Role", "Name"];
+        if (title === "Users") headers = ["Email", "Password", "Role", "Name"];
 
         await sheets.spreadsheets.values.update({
           spreadsheetId,
@@ -150,7 +161,7 @@ app.get("/api/sheets/init", async (req, res) => {
 
 app.get("/api/sheets/data/:sheetName", async (req, res) => {
   try {
-    const sheets = await getSheets(req);
+    const sheets = await getSheets();
     const { sheetName } = req.params;
     const spreadsheetId = (process.env.SPREADSHEET_ID || "1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM").trim();
 
@@ -179,7 +190,7 @@ app.get("/api/sheets/data/:sheetName", async (req, res) => {
 
 app.put("/api/sheets/data/:sheetName/:id", async (req, res) => {
   try {
-    const sheets = await getSheets(req);
+    const sheets = await getSheets();
     const { sheetName, id } = req.params;
     const spreadsheetId = (process.env.SPREADSHEET_ID || "1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM").trim();
     const values = req.body.values;
@@ -215,7 +226,7 @@ app.put("/api/sheets/data/:sheetName/:id", async (req, res) => {
 
 app.delete("/api/sheets/data/:sheetName/:id", async (req, res) => {
   try {
-    const sheets = await getSheets(req);
+    const sheets = await getSheets();
     const { sheetName, id } = req.params;
     const spreadsheetId = (process.env.SPREADSHEET_ID || "1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM").trim();
 
@@ -268,7 +279,7 @@ app.delete("/api/sheets/data/:sheetName/:id", async (req, res) => {
 
 app.post("/api/sheets/data/:sheetName", async (req, res) => {
   try {
-    const sheets = await getSheets(req);
+    const sheets = await getSheets();
     const { sheetName } = req.params;
     const spreadsheetId = (process.env.SPREADSHEET_ID || "1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM").trim();
     const values = req.body.values; // Expecting an array of values [val1, val2, ...]
@@ -290,7 +301,7 @@ app.post("/api/sheets/data/:sheetName", async (req, res) => {
 
 app.post("/api/sheets/seed", async (req, res) => {
   try {
-    const sheets = await getSheets(req);
+    const sheets = await getSheets();
     const spreadsheetId = (process.env.SPREADSHEET_ID || "1x75Ms8xPARMsz-dJGm7Hz6g8QvHJCZrRNQrf_X-HYZM").trim();
 
     // Ensure sheets exist first
@@ -318,7 +329,7 @@ app.post("/api/sheets/seed", async (req, res) => {
         if (title === "Products") headers = ["ID", "Name", "Price", "Category", "Stock"];
         if (title === "Transactions") headers = ["ID", "MemberID", "Type", "Amount", "Date", "Description"];
         if (title === "Inventory") headers = ["ProductID", "Quantity", "LastUpdated"];
-        if (title === "Users") headers = ["Email", "Role", "Name"];
+        if (title === "Users") headers = ["Email", "Password", "Role", "Name"];
 
         await sheets.spreadsheets.values.update({
           spreadsheetId,
@@ -357,9 +368,9 @@ app.post("/api/sheets/seed", async (req, res) => {
         ["PRD-2003", "100", "05/02/2024"],
       ],
       Users: [
-        ["admin@koperasi.com", "Admin", "Administrator"],
-        ["staff@koperasi.com", "Pengurus", "Staff Koperasi"],
-        ["budi@email.com", "Anggota", "Budi Santoso"],
+        ["admin@koperasi.com", "admin123", "Admin", "Administrator"],
+        ["staff@koperasi.com", "staff123", "Pengurus", "Staff Koperasi"],
+        ["budi@email.com", "budi123", "Anggota", "Budi Santoso"],
       ]
     };
 
